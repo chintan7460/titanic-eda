@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Project 01 - Titanic EDA Live Demo</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  body { font-family: Arial, sans-serif; background: #f2f4f7; margin: 0; padding: 20px; color: #222; }
+  .wrap { max-width: 960px; margin: auto; }
+  .box { background: #fff; border: 1px solid #ccc; border-radius: 8px; padding: 18px; margin-bottom: 16px; }
+  h1 { margin: 0 0 4px; } h2 { margin-top: 0; font-size: 19px; }
+  .sub { color: #555; margin: 0; }
+  .cards { display: flex; flex-wrap: wrap; gap: 12px; }
+  .card { flex: 1; min-width: 130px; background: #eef2f8; border-radius: 6px; padding: 10px; text-align: center; }
+  .card b { display: block; font-size: 24px; }
+  table { border-collapse: collapse; font-size: 13px; }
+  th, td { border: 1px solid #ddd; padding: 5px 9px; text-align: center; }
+  th { background: #f6f7f9; }
+  .controls { display: flex; flex-wrap: wrap; gap: 14px; align-items: end; margin-bottom: 12px; }
+  select, button { padding: 6px 10px; font-size: 15px; }
+  #chartArea { height: 380px; }
+  #status { color: #b45309; }
+  .scroll { overflow-x: auto; }
+  .insight { margin: 6px 0 0; color: #333; }
+
+  :root { box-sizing: border-box; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+  html { scroll-padding-top: env(safe-area-inset-top, 0px); }
+  @media (prefers-color-scheme: dark) {
+    body { background: #10151c; color: #e8edf3; }
+    .box { background: #18202b; border-color: #2b3644; }
+    .card { background: #222d3b; }
+    th { background: #222d3b; color: #e8edf3; }
+    th, td { border-color: #2b3644; }
+    .sub, .insight { color: #aab5c4; }
+    select, button, input { background: #10151c; color: #e8edf3; border: 1px solid #2b3644; }
+    #status { color: #fbbf24; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="box">
+    <h1>Project 01: Exploratory Data Analysis on Titanic</h1>
+    <p class="sub">Name: Chintan Patel | College: Parul University</p>
+    <p id="status">Choose a Titanic CSV file to start. Everything runs in your browser and the file is not uploaded anywhere.</p>
+    <p><input type="file" id="file" accept=".csv"></p>
+    <p class="sub">No file yet? Download titanic.csv from the seaborn-data repository on GitHub (mwaskom/seaborn-data) or from Kaggle. Both formats work.</p>
+  </div>
+
+  <div id="app" hidden>
+    <div class="box">
+      <h2>1. Overview</h2>
+      <div class="cards" id="cards"></div>
+    </div>
+
+    <div class="box">
+      <h2>2. Missing values</h2>
+      <label><input type="checkbox" id="clean"> Fill missing values (age = median of class and sex, embarked = most common port)</label>
+      <div class="scroll" id="missing" style="margin-top:10px"></div>
+    </div>
+
+    <div class="box">
+      <h2>3. Survival analysis</h2>
+      <div class="controls">
+        <div>Chart<br><select id="view">
+          <option value="sex">Survival rate by sex</option>
+          <option value="pclass">Survival rate by passenger class</option>
+          <option value="embarked">Survival rate by port</option>
+          <option value="agegroup">Survival rate by age group</option>
+          <option value="family">Survival rate by family size</option>
+          <option value="age">Age distribution (survived vs not)</option>
+          <option value="fare">Median fare by class</option>
+        </select></div>
+      </div>
+      <div id="chartArea"><canvas id="chart"></canvas></div>
+      <p class="insight" id="insight"></p>
+    </div>
+
+    <div class="box">
+      <h2>4. Survival rate by sex and class</h2>
+      <div class="scroll" id="pivot"></div>
+    </div>
+
+    <div class="box">
+      <h2>5. Correlation matrix</h2>
+      <div class="scroll" id="corr"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ---- logic start (no DOM here) ----
+// Read a CSV text into a list of objects. Handles quoted values like "Smith, Mr. John".
+function parseCSV(text) {
+  var rows = [], row = [], cell = "", inQuotes = false;
+  for (var i = 0; i < text.length; i++) {
+    var ch = text[i];
+    if (inQuotes) {
+      if (ch == '"' && text[i + 1] == '"') { cell += '"'; i++; }
+      else if (ch == '"') inQuotes = false;
+      else cell += ch;
+    } else if (ch == '"') inQuotes = true;
+    else if (ch == ",") { row.push(cell); cell = ""; }
+    else if (ch == "\n") { row.push(cell); rows.push(row); row = []; cell = ""; }
+    else if (ch != "\r") cell += ch;
+  }
+  if (cell != "" || row.length) { row.push(cell); rows.push(row); }
+  var head = rows[0].map(function (h) { return h.trim().toLowerCase(); });
+  var out = [];
+  for (var r = 1; r < rows.length; r++) {
+    if (rows[r].length < head.length) continue;
+    var obj = {};
+    for (var c = 0; c < head.length; c++) obj[head[c]] = rows[r][c];
+    out.push(obj);
+  }
+  return out;
+}
+
+function num(v) { return (v === "" || v === undefined || isNaN(Number(v))) ? null : Number(v); }
+
+function median(list) {
+  var a = list.filter(function (v) { return v !== null; }).sort(function (x, y) { return x - y; });
+  if (!a.length) return null;
+  var m = Math.floor(a.length / 2);
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+}
+
+// Turn raw CSV rows into clean passenger objects. fill = true repairs missing age and port.
+function buildPassengers(raw, fill) {
+  var p = raw.map(function (r) {
+    return { survived: num(r.survived), pclass: num(r.pclass), sex: (r.sex || "").toLowerCase(),
+             age: num(r.age), sibsp: num(r.sibsp), parch: num(r.parch), fare: num(r.fare),
+             embarked: (r.embarked || "").toUpperCase() };
+  });
+  if (fill) {
+    var groups = {};
+    p.forEach(function (x) { var k = x.pclass + "|" + x.sex; (groups[k] = groups[k] || []).push(x.age); });
+    var counts = {};
+    p.forEach(function (x) { if (x.embarked) counts[x.embarked] = (counts[x.embarked] || 0) + 1; });
+    var port = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a]; })[0];
+    p.forEach(function (x) {
+      if (x.age === null) x.age = median(groups[x.pclass + "|" + x.sex]);
+      if (!x.embarked) x.embarked = port;
+    });
+  }
+  p.forEach(function (x) {
+    x.family = (x.sibsp || 0) + (x.parch || 0) + 1;
+    x.agegroup = x.age === null ? null : x.age <= 12 ? "Child" : x.age <= 18 ? "Teen" : x.age <= 35 ? "Young adult" : x.age <= 60 ? "Adult" : "Senior";
+  });
+  return p;
+}
+
+// Survival rate (%) for each value of a field
+function rateBy(p, field, order) {
+  var s = {}, n = {};
+  p.forEach(function (x) {
+    var k = x[field]; if (k === null || k === "" || x.survived === null) return;
+    s[k] = (s[k] || 0) + x.survived; n[k] = (n[k] || 0) + 1;
+  });
+  var keys = order || Object.keys(n).sort();
+  keys = keys.filter(function (k) { return n[k]; });
+  return { keys: keys, rates: keys.map(function (k) { return +(100 * s[k] / n[k]).toFixed(1); }), counts: keys.map(function (k) { return n[k]; }) };
+}
+
+function correlation(a, b) {
+  var xs = [], ys = [];
+  for (var i = 0; i < a.length; i++) if (a[i] !== null && b[i] !== null) { xs.push(a[i]); ys.push(b[i]); }
+  var n = xs.length, mx = 0, my = 0;
+  for (var i = 0; i < n; i++) { mx += xs[i]; my += ys[i]; }
+  mx /= n; my /= n;
+  var t = 0, dx = 0, dy = 0;
+  for (var i = 0; i < n; i++) { t += (xs[i] - mx) * (ys[i] - my); dx += Math.pow(xs[i] - mx, 2); dy += Math.pow(ys[i] - my, 2); }
+  return t / Math.sqrt(dx * dy);
+}
+// ---- logic end ----
+
+var raw = [], people = [], chart = null;
+function $(id) { return document.getElementById(id); }
+
+function loadText(text, source) {
+  raw = parseCSV(text);
+  if (!raw.length || !("survived" in raw[0])) {
+    $("status").textContent = "This file does not look like the Titanic dataset (no 'survived' column).";
+    return;
+  }
+  $("status").textContent = "Loaded " + raw.length + " passengers from " + source + ".";
+  $("app").hidden = false;
+  update();
+}
+
+function update() {
+  people = buildPassengers(raw, $("clean").checked);
+  showOverview(); showMissing(); showChart(); showPivot(); showCorr();
+}
+
+function showOverview() {
+  var surv = people.filter(function (x) { return x.survived == 1; }).length;
+  var ages = people.map(function (x) { return x.age; }).filter(function (v) { return v !== null; });
+  var meanAge = ages.reduce(function (a, b) { return a + b; }, 0) / ages.length;
+  var fares = people.map(function (x) { return x.fare; });
+  var items = [["Passengers", people.length], ["Survived", surv], ["Survival rate", (100 * surv / people.length).toFixed(1) + "%"],
+               ["Average age", meanAge.toFixed(1)], ["Median fare", median(fares).toFixed(2)]];
+  $("cards").innerHTML = items.map(function (i) { return "<div class='card'><b>" + i[1] + "</b>" + i[0] + "</div>"; }).join("");
+}
+
+function showMissing() {
+  var cols = ["survived", "pclass", "sex", "age", "sibsp", "parch", "fare", "embarked"];
+  var html = "<table><tr><th>Column</th><th>Missing</th><th>Percent</th></tr>";
+  cols.forEach(function (c) {
+    var m = people.filter(function (x) { return x[c] === null || x[c] === ""; }).length;
+    html += "<tr><td>" + c + "</td><td>" + m + "</td><td>" + (100 * m / people.length).toFixed(1) + "%</td></tr>";
+  });
+  $("missing").innerHTML = html + "</table>";
+}
+
+function showChart() {
+  var v = $("view").value, labels, datasets, yTitle = "Survival rate (%)", type = "bar", note = "";
+  if (chart) chart.destroy();
+  if (v == "age") {
+    var ages = people.map(function (x) { return x.age; }).filter(function (a) { return a !== null; });
+    var max = Math.ceil(Math.max.apply(null, ages) / 10) * 10, bins = max / 10;
+    var yes = [], no = [];
+    labels = [];
+    for (var b = 0; b < bins; b++) { labels.push(b * 10 + "-" + (b * 10 + 9)); yes.push(0); no.push(0); }
+    people.forEach(function (x) {
+      if (x.age === null || x.survived === null) return;
+      var i = Math.min(bins - 1, Math.floor(x.age / 10));
+      if (x.survived == 1) yes[i]++; else no[i]++;
+    });
+    datasets = [{ label: "Did not survive", data: no, backgroundColor: "#c0392b" }, { label: "Survived", data: yes, backgroundColor: "#27ae60" }];
+    yTitle = "Passengers";
+    note = "Children under 10 had the best chances, while the biggest group of non-survivors is young adults.";
+  } else if (v == "fare") {
+    var cls = ["1", "2", "3"];
+    labels = cls.map(function (c) { return "Class " + c; });
+    datasets = [{ label: "Median fare", data: cls.map(function (c) { return median(people.filter(function (x) { return String(x.pclass) == c; }).map(function (x) { return x.fare; })); }), backgroundColor: "#2c6fbb" }];
+    yTitle = "Fare";
+    note = "First class tickets cost far more than third class tickets.";
+  } else {
+    var order = v == "agegroup" ? ["Child", "Teen", "Young adult", "Adult", "Senior"] : v == "family" ? [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] : null;
+    var r = rateBy(people, v == "family" ? "family" : v, order);
+    labels = r.keys.map(function (k) { return v == "pclass" ? "Class " + k : String(k); });
+    datasets = [{ label: "Survival rate (%)", data: r.rates, backgroundColor: "#2c6fbb" }];
+    var best = r.keys[r.rates.indexOf(Math.max.apply(null, r.rates))], worst = r.keys[r.rates.indexOf(Math.min.apply(null, r.rates))];
+    note = "Highest survival rate: " + best + " (" + Math.max.apply(null, r.rates) + "%). Lowest: " + worst + " (" + Math.min.apply(null, r.rates) + "%). Group sizes: " + r.counts.join(", ") + ".";
+  }
+  chart = new Chart($("chart"), { type: type, data: { labels: labels, datasets: datasets },
+    options: { maintainAspectRatio: false, scales: { y: { beginAtZero: true, stacked: v == "age", title: { display: true, text: yTitle } }, x: { stacked: v == "age" } } } });
+  $("insight").textContent = note;
+}
+
+function showPivot() {
+  var html = "<table><tr><th>Sex</th><th>Class 1</th><th>Class 2</th><th>Class 3</th></tr>";
+  ["female", "male"].forEach(function (sex) {
+    html += "<tr><th>" + sex + "</th>";
+    [1, 2, 3].forEach(function (c) {
+      var g = people.filter(function (x) { return x.sex == sex && x.pclass == c && x.survived !== null; });
+      var s = g.reduce(function (a, x) { return a + x.survived; }, 0);
+      html += "<td>" + (g.length ? (100 * s / g.length).toFixed(1) + "%" : "-") + "</td>";
+    });
+    html += "</tr>";
+  });
+  $("pivot").innerHTML = html + "</table>";
+}
+
+function showCorr() {
+  var cols = ["survived", "pclass", "age", "sibsp", "parch", "fare", "family"];
+  var html = "<table><tr><th></th>" + cols.map(function (c) { return "<th>" + c + "</th>"; }).join("") + "</tr>";
+  cols.forEach(function (a) {
+    html += "<tr><th>" + a + "</th>";
+    cols.forEach(function (b) {
+      var c = correlation(people.map(function (x) { return x[a]; }), people.map(function (x) { return x[b]; }));
+      var rgb = c >= 0 ? "40,90,220" : "210,40,60";
+      html += "<td style='background:rgba(" + rgb + "," + Math.abs(c).toFixed(2) + ");color:" + (Math.abs(c) > 0.55 ? "white" : "black") + "'>" + c.toFixed(2) + "</td>";
+    });
+    html += "</tr>";
+  });
+  $("corr").innerHTML = html + "</table>";
+}
+
+$("view").onchange = showChart;
+$("clean").onchange = update;
+$("file").onchange = function () {
+  var f = this.files[0]; if (!f) return;
+  var reader = new FileReader();
+  reader.onload = function () { loadText(reader.result, f.name); };
+  reader.readAsText(f);
+};
+
+// Dark mode: make chart text readable
+if (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches) { Chart.defaults.color = '#e8edf3'; Chart.defaults.borderColor = '#2b3644'; }
+</script>
+</body>
+</html>
